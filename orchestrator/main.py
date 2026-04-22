@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import anyio
+import functools
 import json
 import subprocess
 import sys
@@ -183,7 +184,7 @@ def scan(
     repo = repo.resolve()
     report_out = report_out or (repo / ".sast-agent" / "report.md")
     baseline_path = baseline_path or (repo / ".sast-agent" / "baseline.db")
-    rc = anyio.run(
+    rc = anyio.run(functools.partial(
         _scan,
         repo=repo,
         mode=mode,
@@ -193,7 +194,7 @@ def scan(
         report_out=report_out,
         baseline_path=baseline_path,
         skip_known_exclusions=not fresh,
-    )
+    ))
     sys.exit(rc or 0)
 
 
@@ -462,7 +463,7 @@ def fix(
     if create_prs and not push:
         console.print("[yellow]--create-prs implies --push; enabling --push[/yellow]")
         push = True
-    rc = anyio.run(
+    rc = anyio.run(functools.partial(
         _fix_pipeline,
         repo=repo,
         baseline_path=baseline_path,
@@ -471,7 +472,7 @@ def fix(
         create_prs=create_prs,
         base_branch=base_branch,
         limit=limit,
-    )
+    ))
     sys.exit(rc or 0)
 
 
