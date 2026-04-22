@@ -76,7 +76,11 @@ async def _scan(
 
     # 2. Scanner (Phase 1)
     console.print("[cyan]→ running Scanner agent(s)…[/cyan]")
-    candidates = await run_scanner_batched(repo, files)
+    try:
+        candidates = await run_scanner_batched(repo, files)
+    except RuntimeError as e:
+        console.print(f"[red]{e}[/red]")
+        return 3
     console.print(f"[green]Scanner produced {len(candidates)} candidate(s).[/green]")
 
     if not candidates:
@@ -107,6 +111,21 @@ async def _scan(
 
     # 4. Validator fan-out
     validator_results = await validate_all(repo, to_validate, concurrency=concurrency)
+
+    # 4b. Detect mass LLM failure so users don't mistake infra issues for a clean scan.
+    if to_validate:
+        llm_err_count = sum(
+            1
+            for r in validator_results
+            if r.get("exclusion_category") == "over_inference"
+            and "llm_error" in (r.get("reason") or "")
+        )
+        if llm_err_count == len(to_validate):
+            console.print(
+                f"[red]All {llm_err_count} validator call(s) failed with LLM errors. "
+                f"Example: {validator_results[0].get('reason')}[/red]"
+            )
+            return 3
 
     # 5. Split into confirmed / excluded, write to baseline
     confirmed: list[dict] = []

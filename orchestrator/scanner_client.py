@@ -46,14 +46,32 @@ async def run_scanner(repo: Path, files: list[Path]) -> AgentResult:
 async def run_scanner_batched(
     repo: Path, files: list[Path], batch_size: int = 40
 ) -> list[dict]:
-    """Scan in batches to stay under context limits. Returns merged candidate list."""
+    """Scan in batches to stay under context limits. Returns merged candidate list.
+
+    Raises RuntimeError if every batch failed with an LLM error (e.g. API auth,
+    quota, or model compatibility) — so users don't mistake an infra failure
+    for a clean codebase.
+    """
     all_candidates: list[dict] = []
+    errors: list[str] = []
+    total_batches = 0
     for i in range(0, len(files), batch_size):
+        total_batches += 1
         batch = files[i : i + batch_size]
         result = await run_scanner(repo, batch)
+        if result.error:
+            errors.append(result.error)
+            print(f"  [scanner batch {i}] error: {result.error}")
         if result.parsed and isinstance(result.parsed.get("candidates"), list):
             # tag candidates with batch offset to avoid id collision
             for idx, cand in enumerate(result.parsed["candidates"]):
                 cand["id"] = f"b{i}_{cand.get('id', idx)}"
                 all_candidates.append(cand)
+
+    # Fail loudly if the scanner could not talk to the LLM at all.
+    if errors and len(errors) == total_batches and not all_candidates:
+        raise RuntimeError(
+            f"Scanner failed on all {total_batches} batch(es). "
+            f"First error: {errors[0]}"
+        )
     return all_candidates
