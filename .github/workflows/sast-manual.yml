@@ -92,3 +92,4 @@ jobs:
         with:
           name: sast-manual-report
           path: .sast-agent/
+          if-no-files-found: ignore

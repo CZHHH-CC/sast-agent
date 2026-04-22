@@ -93,3 +93,4 @@ jobs:
         with:
           name: sast-weekly-report
           path: .sast-agent/
+          if-no-files-found: ignore
