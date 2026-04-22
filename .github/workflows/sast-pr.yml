@@ -67,3 +67,4 @@ jobs:
           name: sast-report-pr-${{ github.event.pull_request.number }}
           path: .sast-agent/
           if-no-files-found: ignore
+          include-hidden-files: true

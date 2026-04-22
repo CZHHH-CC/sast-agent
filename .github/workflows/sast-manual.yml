@@ -93,3 +93,4 @@ jobs:
           name: sast-manual-report
           path: .sast-agent/
           if-no-files-found: ignore
+          include-hidden-files: true
