@@ -80,6 +80,9 @@ async def _scan(
     console.print(f"[green]Scanner produced {len(candidates)} candidate(s).[/green]")
 
     if not candidates:
+        # Ensure baseline.db exists (even empty) so downstream steps don't fail.
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        Baseline(baseline_path)
         _write_report(report_out, repo, [], [], mode, _resolve_git_head(repo))
         return 0
 
@@ -284,8 +287,8 @@ async def _fix_pipeline(
     limit: int | None,
 ) -> int:
     if not baseline_path.exists():
-        console.print(f"[red]No baseline at {baseline_path}. Run `sast-agent scan` first.[/red]")
-        return 1
+        console.print(f"[yellow]No baseline at {baseline_path}. Nothing to fix.[/yellow]")
+        return 0
 
     bl = Baseline(baseline_path)
     findings = bl.all_confirmed()
