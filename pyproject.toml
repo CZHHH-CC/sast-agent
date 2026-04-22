@@ -28,6 +28,7 @@ include = ["orchestrator*"]
 
 [tool.setuptools.package-data]
 "orchestrator.ui" = ["templates/*.html", "static/*.css"]
+"orchestrator" = ["agents/*.md", "skills/sast-audit/*.md", "skills/sast-audit/references/*.md"]
 
 [tool.ruff]
 line-length = 100

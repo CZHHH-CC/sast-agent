@@ -23,8 +23,8 @@ from .llm import LLMClient, Message, StopReason, ToolCall, ToolResult, build_cli
 from .tools import ToolRegistry, build_default_readonly_registry
 
 
-AGENTS_DIR = Path(__file__).parent.parent / "agents"
-SKILL_ROOT = Path(__file__).parent.parent / "skills" / "sast-audit"
+AGENTS_DIR = Path(__file__).parent / "agents"
+SKILL_ROOT = Path(__file__).parent / "skills" / "sast-audit"
 
 
 @dataclass
