@@ -1,0 +1,42 @@
+{% if not findings %}
+  <p class="muted">(no findings match)</p>
+{% else %}
+<table class="findings">
+  <thead>
+    <tr>
+      <th>Severity</th>
+      <th>Status</th>
+      <th>Sink</th>
+      <th>File</th>
+      <th>Title</th>
+      <th>Last seen</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for f in findings %}
+    <tr class="sev-{{ (f.severity or 'INFO')|lower }}">
+      <td>
+        {% if f.severity %}
+          <span class="sev-badge sev-{{ f.severity|lower }}">{{ f.severity }}</span>
+        {% else %}
+          <span class="muted">—</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if f.status == 'confirmed' %}
+          <span class="pill pill-confirmed">confirmed</span>
+        {% else %}
+          <span class="pill pill-excluded" title="{{ f.exclusion_category or '' }}">
+            excluded{% if f.exclusion_category %} · {{ f.exclusion_category }}{% endif %}
+          </span>
+        {% endif %}
+      </td>
+      <td><code>{{ f.sink_type }}</code></td>
+      <td class="file"><code>{{ f.file }}{% if f.line %}:{{ f.line }}{% endif %}</code></td>
+      <td><a href="/finding/{{ f.fingerprint }}">{{ f.title }}</a></td>
+      <td class="muted">{{ f.last_seen|fmt_ts }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}

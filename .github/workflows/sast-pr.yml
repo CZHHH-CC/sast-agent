@@ -1,0 +1,69 @@
+name: SAST (PR)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write  # needed for `gh pr comment`
+
+jobs:
+  sast:
+    runs-on: ubuntu-latest
+    # Skip drafts to save tokens; remove this line if you want draft coverage.
+    if: github.event.pull_request.draft == false
+
+    steps:
+      - name: Checkout with full history (needed for diff scope)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Fetch PR base
+        run: |
+          git fetch --no-tags --prune --depth=1 origin \
+            +refs/heads/${{ github.event.pull_request.base.ref }}:refs/remotes/origin/${{ github.event.pull_request.base.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install sast-agent
+        run: |
+          pip install --upgrade pip
+          pip install -e .
+
+      - name: Run diff-mode scan
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SAST_OPENAI_BASE_URL: ${{ secrets.SAST_OPENAI_BASE_URL }}
+          SAST_ANTHROPIC_MODEL: ${{ vars.SAST_ANTHROPIC_MODEL }}
+          SAST_OPENAI_MODEL: ${{ vars.SAST_OPENAI_MODEL }}
+          SAST_PROVIDER: ${{ vars.SAST_PROVIDER }}
+        run: |
+          sast-agent scan \
+            --repo . \
+            --mode diff \
+            --base origin/${{ github.event.pull_request.base.ref }} \
+            --head ${{ github.event.pull_request.head.sha }} \
+            --concurrency 5
+
+      - name: Post report as PR comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sast-agent gh-pr-comment \
+            --repo . \
+            --pr ${{ github.event.pull_request.number }}
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-report-pr-${{ github.event.pull_request.number }}
+          path: .sast-agent/
+          if-no-files-found: ignore

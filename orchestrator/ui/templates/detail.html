@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}{{ f.title }} — sast-agent{% endblock %}
+{% block content %}
+<p><a href="/">← back to list</a></p>
+
+<article class="detail">
+  <header>
+    <h2>
+      {% if f.severity %}<span class="sev-badge sev-{{ f.severity|lower }}">{{ f.severity }}</span>{% endif %}
+      {{ f.title }}
+    </h2>
+    <div class="meta">
+      <span class="pill pill-{{ f.status }}">{{ f.status }}{% if f.exclusion_category %} · {{ f.exclusion_category }}{% endif %}</span>
+      <code>{{ f.sink_type }}</code>
+      <code class="file">{{ f.file }}{% if f.line %}:{{ f.line }}{% endif %}</code>
+    </div>
+    <div class="meta muted">
+      first seen {{ f.first_seen|fmt_ts }} · last seen {{ f.last_seen|fmt_ts }}
+      · fingerprint <code>{{ f.fingerprint[:12] }}…</code>
+    </div>
+  </header>
+
+  {% set p = f.payload %}
+
+  {% if p.snippet %}
+    <h3>Snippet</h3>
+    <pre><code>{{ p.snippet }}</code></pre>
+  {% endif %}
+
+  {% if p.reason %}
+    <h3>Reason</h3>
+    <p>{{ p.reason }}</p>
+  {% endif %}
+
+  {% if p.verified_evidence %}
+    <h3>Verified evidence</h3>
+    <dl class="evidence">
+      {% for k, v in p.verified_evidence.items() %}
+        <dt>{{ k }}</dt><dd>{{ v }}</dd>
+      {% endfor %}
+    </dl>
+  {% endif %}
+
+  {% if p.attack_chain %}
+    <h3>Attack chain</h3>
+    <ol>
+      {% for step in p.attack_chain %}<li>{{ step }}</li>{% endfor %}
+    </ol>
+  {% endif %}
+
+  {% if p.reproduction %}
+    <h3>Reproduction</h3>
+    <pre><code>{{ p.reproduction }}</code></pre>
+  {% endif %}
+
+  {% if p.impact %}
+    <h3>Impact</h3>
+    <p>{{ p.impact }}</p>
+  {% endif %}
+
+  {% if p.fix_suggestion %}
+    <h3>Fix suggestion</h3>
+    <pre><code>{{ p.fix_suggestion }}</code></pre>
+  {% endif %}
+
+  {% if p.cvss_hint %}
+    <p><strong>CVSS hint:</strong> {{ p.cvss_hint }}</p>
+  {% endif %}
+
+  <details>
+    <summary>Raw payload</summary>
+    <pre><code>{{ p|tojson(indent=2) }}</code></pre>
+  </details>
+</article>
+{% endblock %}

@@ -1,0 +1,94 @@
+name: SAST (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to scan (branch / tag / sha)"
+        required: true
+        default: ""
+      mode:
+        description: "Scan mode"
+        required: true
+        default: "full"
+        type: choice
+        options: [full, diff]
+      diff_base:
+        description: "(diff mode) base ref"
+        required: false
+        default: "main"
+      concurrency:
+        description: "Validator concurrency"
+        required: false
+        default: "5"
+      generate_fix_prs:
+        description: "Generate fix PRs for confirmed findings"
+        required: false
+        default: "false"
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout ${{ inputs.ref }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install sast-agent
+        run: |
+          pip install --upgrade pip
+          pip install -e .
+
+      - name: Run scan
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SAST_OPENAI_BASE_URL: ${{ secrets.SAST_OPENAI_BASE_URL }}
+          SAST_ANTHROPIC_MODEL: ${{ vars.SAST_ANTHROPIC_MODEL }}
+          SAST_OPENAI_MODEL: ${{ vars.SAST_OPENAI_MODEL }}
+          SAST_PROVIDER: ${{ vars.SAST_PROVIDER }}
+        run: |
+          if [ "${{ inputs.mode }}" = "diff" ]; then
+            sast-agent scan --repo . --mode diff \
+              --base ${{ inputs.diff_base }} --head HEAD \
+              --concurrency ${{ inputs.concurrency }}
+          else
+            sast-agent scan --repo . --mode full \
+              --concurrency ${{ inputs.concurrency }}
+          fi
+
+      - name: Generate fix PRs
+        if: ${{ inputs.generate_fix_prs == true }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SAST_OPENAI_BASE_URL: ${{ secrets.SAST_OPENAI_BASE_URL }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "sast-agent[bot]"
+          git config user.email "sast-agent@users.noreply.github.com"
+          sast-agent fix \
+            --repo . \
+            --concurrency 3 \
+            --push --create-prs \
+            --base-branch ${{ inputs.ref }}
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-manual-report
+          path: .sast-agent/

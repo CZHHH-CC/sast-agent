@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}sast-agent — {{ repo_name }}{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
+  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+  <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <h1><a href="/">sast-agent</a> <span class="muted">/ {{ repo_name }}</span></h1>
+      <nav>
+        <a href="/">Findings</a>
+        <a href="/trends">Trends</a>
+      </nav>
+    </div>
+  </header>
+  <main class="wrap">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="wrap muted">
+    repo: <code>{{ repo }}</code> &nbsp;·&nbsp; read-only view
+  </footer>
+</body>
+</html>

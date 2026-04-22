@@ -1,0 +1,95 @@
+name: SAST (Weekly Full)
+
+on:
+  schedule:
+    # Every Sunday 00:00 UTC
+    - cron: "0 0 * * 0"
+  workflow_dispatch:
+    inputs:
+      open_issue:
+        description: "Open GitHub Issue with the report"
+        required: false
+        default: "true"
+      commit_baseline:
+        description: "Commit updated baseline to sast-baseline branch"
+        required: false
+        default: "true"
+
+permissions:
+  contents: write    # needed to push sast-baseline branch
+  issues: write      # needed for `gh issue create`
+
+jobs:
+  full-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install sast-agent
+        run: |
+          pip install --upgrade pip
+          pip install -e .
+
+      - name: Try to restore prior baseline from sast-baseline branch
+        run: |
+          if git ls-remote --exit-code --heads origin sast-baseline; then
+            git fetch origin sast-baseline:sast-baseline
+            mkdir -p .sast-agent
+            git show sast-baseline:baseline.db > .sast-agent/baseline.db 2>/dev/null || true
+          else
+            echo "No prior sast-baseline branch; scan will create a fresh baseline."
+          fi
+
+      - name: Run full scan
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SAST_OPENAI_BASE_URL: ${{ secrets.SAST_OPENAI_BASE_URL }}
+          SAST_ANTHROPIC_MODEL: ${{ vars.SAST_ANTHROPIC_MODEL }}
+          SAST_OPENAI_MODEL: ${{ vars.SAST_OPENAI_MODEL }}
+          SAST_PROVIDER: ${{ vars.SAST_PROVIDER }}
+        run: |
+          sast-agent scan --repo . --mode full --concurrency 8
+
+      - name: Open weekly Issue
+        if: ${{ inputs.open_issue != 'false' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sast-agent gh-issue --repo . --label sast
+
+      - name: Commit baseline to sast-baseline branch
+        if: ${{ inputs.commit_baseline != 'false' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "sast-agent[bot]"
+          git config user.email "sast-agent@users.noreply.github.com"
+          # Create orphan branch if it doesn't exist
+          if git ls-remote --exit-code --heads origin sast-baseline; then
+            git fetch origin sast-baseline:sast-baseline
+            git checkout sast-baseline
+          else
+            git checkout --orphan sast-baseline
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+          cp .sast-agent/baseline.db ./baseline.db
+          cp .sast-agent/report.md ./report.md || true
+          git add baseline.db report.md
+          git commit -m "sast-agent: refresh baseline ($(date -u +%Y-%m-%dT%H:%MZ))" || echo "no changes"
+          git push origin sast-baseline
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-weekly-report
+          path: .sast-agent/

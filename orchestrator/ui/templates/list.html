@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="filters">
+  <form hx-get="/" hx-target="#rows" hx-push-url="true" hx-trigger="change, keyup changed delay:300ms from:input[name=q]">
+    <label>Status
+      <select name="status">
+        <option value="">(any)</option>
+        <option value="confirmed" {% if filters.status=='confirmed' %}selected{% endif %}>confirmed</option>
+        <option value="excluded" {% if filters.status=='excluded' %}selected{% endif %}>excluded</option>
+      </select>
+    </label>
+    <label>Severity
+      <select name="severity">
+        <option value="">(any)</option>
+        {% for s in ['CRITICAL','HIGH','MEDIUM','LOW','INFO'] %}
+          <option value="{{ s }}" {% if filters.severity==s %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Sink type
+      <select name="sink_type">
+        <option value="">(any)</option>
+        {% for st in sink_types %}
+          <option value="{{ st }}" {% if filters.sink_type==st %}selected{% endif %}>{{ st }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Search
+      <input type="text" name="q" value="{{ filters.q }}" placeholder="file or keyword">
+    </label>
+  </form>
+
+  <div class="summary">
+    <span class="pill pill-confirmed">{{ confirmed_count }} confirmed</span>
+    <span class="pill pill-excluded">{{ excluded_count }} excluded</span>
+  </div>
+</section>
+
+<div id="rows">
+  {% include "_rows.html" %}
+</div>
+{% endblock %}

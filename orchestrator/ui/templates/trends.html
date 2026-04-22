@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Trends — sast-agent{% endblock %}
+{% block content %}
+<h2>Confirmed findings — severity distribution</h2>
+<div class="chart-wrap"><canvas id="sevChart" width="400" height="200"></canvas></div>
+
+<h2>Sink type breakdown</h2>
+<div class="chart-wrap"><canvas id="sinkChart" width="400" height="240"></canvas></div>
+
+<h2>Weekly first-seen (last 12 weeks)</h2>
+<div class="chart-wrap"><canvas id="weekChart" width="400" height="200"></canvas></div>
+
+<script id="chart-data" type="application/json">
+{
+  "severity": {{ severity_counts|tojson }},
+  "sink": {{ sink_breakdown|tojson }},
+  "weekly": {{ weekly_trend|tojson }}
+}
+</script>
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  const data = JSON.parse(document.getElementById("chart-data").textContent);
+
+  new Chart(document.getElementById("sevChart"), {
+    type: "bar",
+    data: {
+      labels: ["CRITICAL","HIGH","MEDIUM","LOW","INFO"],
+      datasets: [{
+        label: "confirmed",
+        data: ["CRITICAL","HIGH","MEDIUM","LOW","INFO"].map(s => data.severity[s] || 0),
+        backgroundColor: ["#c0392b","#e67e22","#f1c40f","#27ae60","#95a5a6"],
+      }],
+    },
+    options: { plugins: { legend: { display: false } } },
+  });
+
+  new Chart(document.getElementById("sinkChart"), {
+    type: "doughnut",
+    data: {
+      labels: data.sink.map(r => r[0]),
+      datasets: [{ data: data.sink.map(r => r[1]) }],
+    },
+  });
+
+  new Chart(document.getElementById("weekChart"), {
+    type: "line",
+    data: {
+      labels: data.weekly.map(r => r[0]),
+      datasets: [{
+        label: "first-seen confirmed",
+        data: data.weekly.map(r => r[1]),
+        tension: 0.25,
+        borderColor: "#2980b9",
+        backgroundColor: "rgba(41,128,185,0.2)",
+        fill: true,
+      }],
+    },
+  });
+});
+</script>
+{% endblock %}
