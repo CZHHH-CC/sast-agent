@@ -1,0 +1,114 @@
+# CLAUDE.md
+
+本文件为在此仓库中使用 Claude Code (claude.ai/code) 时提供指导。
+
+## 项目概述
+
+`sast-agent` 是一个多智能体 SAST（静态应用安全测试）管道。它使用 LLM 智能体（扫描器 → 验证器 → 修复器 → 审核器）在源代码中查找并修复安全漏洞。该工具与提供商无关，可运行在 Anthropic 或 OpenAI API 上。
+
+## 设置与安装
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install -e .
+```
+
+安装后的入口点：`sast-agent`
+
+## 常用命令
+
+```bash
+# 运行离线烟雾测试（无需 API 调用）
+python scripts/smoke_test.py
+
+# 扫描仓库
+sast-agent scan --repo <path> --mode full
+sast-agent scan --repo <path> --mode diff --concurrency 5
+
+# 从现有基线重新渲染报告
+sast-agent report --repo <path>
+
+# 启动本地 Web 查看器（localhost:8765）
+sast-agent ui --repo <path>
+
+# 生成修复并可选择推送 PR
+sast-agent fix --repo <path> [--push] [--create-prs]
+
+# 导出原始候选项而不进行验证
+sast-agent dump-candidates --repo <path> --mode full
+```
+
+## 架构
+
+### 智能体管道
+
+```
+扫描器 → [候选项 JSON]
+        → 验证器池（并行，默认 5 个工作线程）→ 已确认的发现
+                                             → 基线数据库（SQLite）
+                                             → report.md
+        （可选）→ 修复器池 → 审核器客户端 → 分支/PR 推送
+```
+
+所有智能体共享相同的运行时（`orchestrator/agent_runtime.py`）。智能体获得三个沙箱工具：**Read**、**Glob**、**Grep** — 所有路径都限制在扫描根目录内。
+
+### 关键文件
+
+| 文件 | 作用 |
+|------|------|
+| `orchestrator/main.py` | Click CLI 入口点 |
+| `orchestrator/agent_runtime.py` | 与提供商无关的工具使用循环（最多 25 轮） |
+| `orchestrator/scanner_client.py` | 扫描器智能体编排 |
+| `orchestrator/validator_pool.py` | 并发验证器智能体池 |
+| `orchestrator/fixer_pool.py` | 并发修复器智能体池 |
+| `orchestrator/reviewer_client.py` | 修复后审核器智能体 |
+| `orchestrator/llm/` | 提供商适配器（Anthropic、OpenAI）+ 工厂 |
+| `orchestrator/tools/registry.py` | 工具沙箱（Read/Glob/Grep） |
+| `orchestrator/baseline.py` | SQLite 基线 CRUD |
+| `orchestrator/fingerprint.py` | 确定性 16 字符十六进制指纹 |
+| `orchestrator/scope.py` | 文件枚举（完整或差异模式） |
+| `orchestrator/report.py` | Markdown 报告渲染 |
+| `orchestrator/github.py` | Git/`gh` CLI 包装器 |
+| `agents/*.md` | 各智能体角色的系统提示（用中文编写） |
+| `skills/sast-audit/SKILL.md` | 完整的 5 阶段审计方法论 |
+
+### LLM 提供商抽象
+
+`orchestrator/llm/base.py` 定义了包含 `Message`、`ToolCall`、`ToolResult`、`LLMResponse` 的 `LLMClient`。工厂（`llm/factory.py`）按以下顺序从环境变量选择提供商：
+
+1. `SAST_PROVIDER=anthropic|openai`（显式覆盖）
+2. 存在 `ANTHROPIC_API_KEY` → Anthropic（默认模型：`claude-sonnet-4-5`）
+3. 存在 `OPENAI_API_KEY` → OpenAI（默认模型：`gpt-4o`）
+
+可选覆盖：`SAST_ANTHROPIC_MODEL`、`SAST_OPENAI_MODEL`、`SAST_OPENAI_BASE_URL`。
+
+### 基线与指纹
+
+- SQLite 数据库位于 `<repo>/.sast-agent/baseline.db`
+- 指纹是基于 SHA256 的 16 字符十六进制，规范化以适应行号漂移和空白符变化
+- 除非传递 `--fresh`，否则跳过对已知排除项的重新验证
+
+### 工具沙箱
+
+`tools/registry.py` 将所有文件访问限制在扫描根目录内。工具输出上限 30,000 字符。Glob 上限 500 结果；Grep 上限 100 结果。
+
+### GitHub Actions
+
+`.github/workflows/` 中的三个工作流：
+- `sast-pr.yml`：PR 上的差异扫描，将 `report.md` 作为 PR 注释发布
+- `sast-weekly.yml`：每周全量扫描（周日 UTC 00:00），开启 GitHub Issue
+- `sast-manual.yml`：按需运行，支持修复-PR 生成
+
+## 扫描范围
+
+**包含的扩展名**：`.java`、`.kt`、`.scala`、`.groovy`、`.js`、`.ts`、`.jsx`、`.tsx`、`.py`、`.go`、`.rb`、`.php`、`.cs`、`.rs`、`.vue`、`.svelte`
+
+**排除的目录**：`.git`、`node_modules`、`vendor`、`target`、`build`、`__pycache__`、`.venv`、`.next`、`testfixtures`
+
+## 测试夹具
+
+`testfixtures/vulnerable-java/` 包含一个有意引入漏洞的 Java 项目。全量扫描时的预期结果：
+- **2 个已确认**：`SearchController` 中的 SQL 注入、`CommandRunner` 中的命令注入
+- **≥2 个已排除**：`EntityManagerUtil` 中的死代码、`LoginVo` Swagger 注解中的误报
+- **清洁的**：`SafeUserDao` 应该不产生任何发现
