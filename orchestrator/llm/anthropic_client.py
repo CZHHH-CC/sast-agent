@@ -100,13 +100,41 @@ class AnthropicClient(LLMClient):
         messages: list[Message],
         tools: list[ToolDef],
         max_tokens: int = 4096,
+        cache_key: str | None = None,
     ) -> LLMResponse:
+        # --- Prompt caching -------------------------------------------------
+        # System prompt is the largest stable chunk (role instructions + skill
+        # refs, ~10–30K tokens). Mark it as an ephemeral cache breakpoint so
+        # subsequent calls within ~5 min reuse it instead of re-billing full
+        # input. Tools are also stable across a run — cache the last tool
+        # entry, which implicitly caches the entire tools block.
+        cache_enabled = os.environ.get("SAST_DISABLE_PROMPT_CACHE") != "1"
+
+        if cache_enabled and system:
+            system_param: Any = [{
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},
+            }]
+        else:
+            system_param = system
+
+        anth_tools = self._tools_to_anthropic(tools) if tools else []
+        if cache_enabled and anth_tools:
+            # Mark the last tool as a cache breakpoint → everything up to and
+            # including tools is cached.
+            anth_tools[-1] = {**anth_tools[-1], "cache_control": {"type": "ephemeral"}}
+
+        # cache_key is advisory for Anthropic (no native param); it is consumed
+        # by OpenAI-compatible endpoints. Accept silently here.
+        _ = cache_key
+
         resp = await self.client.messages.create(
             model=self.model,
-            system=system,
+            system=system_param,
             max_tokens=max_tokens,
             messages=self._messages_to_anthropic(messages),
-            tools=self._tools_to_anthropic(tools) if tools else [],
+            tools=anth_tools,
         )
 
         text_parts: list[str] = []
@@ -131,5 +159,12 @@ class AnthropicClient(LLMClient):
         usage = {
             "input_tokens": getattr(resp.usage, "input_tokens", 0),
             "output_tokens": getattr(resp.usage, "output_tokens", 0),
+            # Expose cache stats so users can verify hit rate.
+            "cache_creation_input_tokens": getattr(
+                resp.usage, "cache_creation_input_tokens", 0
+            ) or 0,
+            "cache_read_input_tokens": getattr(
+                resp.usage, "cache_read_input_tokens", 0
+            ) or 0,
         }
         return LLMResponse(message=msg, stop_reason=stop, usage=usage)

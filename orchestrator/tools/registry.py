@@ -84,10 +84,24 @@ _READ_SCHEMA = {
     "properties": {
         "file_path": {"type": "string", "description": "Path relative to repo root."},
         "offset": {"type": "integer", "description": "1-based line to start from.", "default": 1},
-        "limit": {"type": "integer", "description": "Max lines to return.", "default": 500},
+        "limit": {
+            "type": "integer",
+            "description": (
+                "Max lines to return. Default 800. Pass a specific range + offset "
+                "to page through a large file instead of truncating arbitrarily."
+            ),
+            "default": 800,
+        },
     },
     "required": ["file_path"],
 }
+
+
+# Paging defaults (P1-6): instead of a hard 30K char truncation at the
+# tool-output layer, we expose explicit pagination via offset/limit. The
+# header tells the agent the total line count and how to read the rest.
+DEFAULT_READ_LIMIT = 800
+MAX_READ_LIMIT = 4000  # hard ceiling per call, to keep a single Read bounded
 
 
 async def _read_impl(cwd: Path, args: dict[str, Any]) -> str:
@@ -97,7 +111,7 @@ async def _read_impl(cwd: Path, args: dict[str, Any]) -> str:
     if not p.is_file():
         raise _ToolError(f"not a regular file: {p.relative_to(cwd)}")
     offset = max(1, int(args.get("offset", 1)))
-    limit = max(1, int(args.get("limit", 500)))
+    limit = max(1, min(MAX_READ_LIMIT, int(args.get("limit", DEFAULT_READ_LIMIT))))
 
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
@@ -105,12 +119,26 @@ async def _read_impl(cwd: Path, args: dict[str, Any]) -> str:
         raise _ToolError(f"read error: {e}")
 
     lines = text.splitlines()
-    end = min(len(lines), offset - 1 + limit)
+    total = len(lines)
+    if offset > total:
+        return (
+            f"# {p.relative_to(cwd)}  (empty window: offset={offset} > total_lines={total})\n"
+        )
+    end = min(total, offset - 1 + limit)
     selected = lines[offset - 1 : end]
     width = max(4, len(str(end)))
-    rendered = "\n".join(f"{str(i+offset).rjust(width)}\t{line}" for i, line in enumerate(selected))
-    header = f"# {p.relative_to(cwd)}  (lines {offset}-{end} of {len(lines)})\n"
-    return header + rendered
+    rendered = "\n".join(
+        f"{str(i + offset).rjust(width)}\t{line}" for i, line in enumerate(selected)
+    )
+    more_hint = ""
+    if end < total:
+        remaining = total - end
+        more_hint = (
+            f"\n# … {remaining} more line(s). "
+            f"Call Read again with offset={end + 1} to continue."
+        )
+    header = f"# {p.relative_to(cwd)}  (lines {offset}-{end} of {total})\n"
+    return header + rendered + more_hint
 
 
 _GLOB_SCHEMA = {
@@ -225,4 +253,7 @@ def build_default_readonly_registry() -> ToolRegistry:
         ),
         _grep_impl,
     )
+    # Semantic tools (P2-7 / P2-8). Imported lazily to avoid cycles on startup.
+    from .semantic_tools import register_semantic_tools
+    register_semantic_tools(reg)
     return reg

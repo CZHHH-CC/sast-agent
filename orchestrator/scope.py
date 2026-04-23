@@ -104,3 +104,49 @@ def diff_scan_files(repo: Path, base: str, head: str) -> list[Path]:
     changed = diff_changed_files(repo, base, head)
     neighbors = expand_neighbors(repo, changed)
     return sorted(set(changed) | set(neighbors))
+
+
+def cluster_by_directory(files: list[Path], target_batch_size: int = 12) -> list[list[Path]]:
+    """Group files into batches such that files sharing a directory tend to land
+    in the same batch. Same-directory / same-module files have higher cross-file
+    relevance (Controller ↔ Service ↔ DAO), so keeping them together lets the
+    Scanner see coherent context in one window.
+
+    Algorithm: bucket by parent dir, then pack buckets greedily. Dirs larger
+    than target split evenly; small dirs accumulate into the current batch
+    until it reaches ``target_batch_size``.
+    """
+    if not files:
+        return []
+
+    by_dir: dict[Path, list[Path]] = {}
+    for f in files:
+        by_dir.setdefault(f.parent, []).append(f)
+
+    # Order dirs by size desc → large modules get dedicated batches first, small
+    # ones pack efficiently afterward.
+    ordered = sorted(by_dir.items(), key=lambda kv: (-len(kv[1]), str(kv[0])))
+
+    batches: list[list[Path]] = []
+    current: list[Path] = []
+    for _dir, group in ordered:
+        group.sort()
+        # Big dir: split into dedicated full-size batches.
+        if len(group) >= target_batch_size:
+            if current:
+                batches.append(current)
+                current = []
+            for i in range(0, len(group), target_batch_size):
+                batches.append(group[i : i + target_batch_size])
+            continue
+        # Small dir: fit into current batch if it doesn't overflow, else flush.
+        if len(current) + len(group) > target_batch_size and current:
+            batches.append(current)
+            current = []
+        current.extend(group)
+        if len(current) >= target_batch_size:
+            batches.append(current)
+            current = []
+    if current:
+        batches.append(current)
+    return batches

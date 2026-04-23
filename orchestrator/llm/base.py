@@ -92,7 +92,13 @@ class LLMClient(ABC):
         messages: list[Message],
         tools: list[ToolDef],
         max_tokens: int = 4096,
+        cache_key: str | None = None,
     ) -> LLMResponse:
         """Run one turn. Must NOT execute tools itself — the runtime does that
-        and calls complete() again with the tool_result messages appended."""
+        and calls complete() again with the tool_result messages appended.
+
+        ``cache_key`` is a hint for prompt caching (e.g. the agent role name).
+        Providers that support caching use it to keep same-role calls routed
+        through the same cache partition; providers that don't ignore it.
+        """
         raise NotImplementedError

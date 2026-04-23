@@ -110,27 +110,53 @@ async def _scan(
     )
 
     # 4. Validator fan-out
-    validator_results = await validate_all(repo, to_validate, concurrency=concurrency)
+    batch = await validate_all(repo, to_validate, concurrency=concurrency)
 
-    # 4b. Detect mass LLM failure so users don't mistake infra issues for a clean scan.
-    if to_validate:
-        llm_err_count = sum(
-            1
-            for r in validator_results
-            if r.get("exclusion_category") == "over_inference"
-            and "llm_error" in (r.get("reason") or "")
+    # 4b. Hard-fail on mass LLM/infra failure so users don't mistake a 403/402/
+    #     network blip for a clean scan. LLM-error entries are NOT written to the
+    #     baseline — otherwise the candidate would be stuck in "excluded" state
+    #     and skipped on every future run.
+    total = batch.total_attempted
+    llm_err = len(batch.llm_errors)
+    parse_err = len(batch.parse_errors)
+
+    if total > 0 and llm_err == total:
+        example = batch.llm_errors[0].get("reason", "?")
+        console.print(
+            f"[red]All {llm_err} validator call(s) failed with LLM errors. "
+            f"Example: {example}[/red]"
         )
-        if llm_err_count == len(to_validate):
-            console.print(
-                f"[red]All {llm_err_count} validator call(s) failed with LLM errors. "
-                f"Example: {validator_results[0].get('reason')}[/red]"
-            )
-            return 3
+        return 3
+    # Partial LLM failure (>=50%) is still not safe to treat as "clean".
+    if total > 0 and llm_err * 2 >= total:
+        example = batch.llm_errors[0].get("reason", "?")
+        console.print(
+            f"[red]{llm_err}/{total} validator call(s) failed with LLM errors "
+            f"(threshold 50%). Example: {example}[/red]"
+        )
+        return 3
+    if llm_err:
+        console.print(
+            f"[yellow]  {llm_err} validator call(s) hit LLM errors and were skipped "
+            f"(not written to baseline).[/yellow]"
+        )
+    if parse_err:
+        console.print(
+            f"[yellow]  {parse_err} validator call(s) produced no parseable JSON; "
+            f"recording as over_inference exclusions.[/yellow]"
+        )
 
-    # 5. Split into confirmed / excluded, write to baseline
+    # 5. Split into confirmed / excluded, write to baseline.
     confirmed: list[dict] = []
     excluded: list[dict] = list(reused)
-    for cand, r in zip(to_validate, validator_results):
+
+    # Build a candidate lookup so we can resolve fingerprint per result entry.
+    by_id = {c.get("id"): c for c in to_validate}
+
+    for r in batch.results:
+        cand = by_id.get(r.get("candidate_id"))
+        if cand is None:
+            continue
         fp = cand["_fingerprint"]
         r["_fingerprint"] = fp
         baseline.upsert(fp, r)
@@ -138,6 +164,31 @@ async def _scan(
             confirmed.append(r)
         else:
             excluded.append(r)
+
+    # parse_errors: record as excluded/over_inference so they surface in the
+    # report (rather than vanishing), but with an honest reason so humans see
+    # "this was not actually judged" and can re-run on the fingerprint.
+    for pe in batch.parse_errors:
+        cand = by_id.get(pe.get("candidate_id"))
+        if cand is None:
+            continue
+        fp = cand["_fingerprint"]
+        entry = {
+            "status": "excluded",
+            "exclusion_category": "over_inference",
+            "reason": f"validator produced no parseable JSON ({pe.get('reason')})",
+            "evidence": "",
+            "file": cand.get("file"),
+            "line": cand.get("line"),
+            "sink_type": cand.get("sink_type"),
+            "snippet": cand.get("snippet"),
+            "candidate_id": cand.get("id"),
+            "_fingerprint": fp,
+        }
+        baseline.upsert(fp, entry)
+        excluded.append(entry)
+
+    # llm_errors: DO NOT persist. We want them to be re-attempted next run.
 
     # 6. Report
     _write_report(report_out, repo, confirmed, excluded, mode, _resolve_git_head(repo))

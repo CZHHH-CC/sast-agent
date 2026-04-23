@@ -100,7 +100,16 @@ async def run_agent(
 
     messages: list[Message] = [Message(role="user", text=user_prompt)]
     final_text = ""
-    total_usage = {"input_tokens": 0, "output_tokens": 0}
+    total_usage = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
+
+    # Use the role name as a cache_key hint so same-role calls share a cache
+    # partition (OpenAI Automatic Prompt Caching) / stay within a cache lane.
+    cache_key = f"sast-agent/{role}"
 
     for turn in range(1, max_turns + 1):
         try:
@@ -109,6 +118,7 @@ async def run_agent(
                 messages=messages,
                 tools=tool_defs,
                 max_tokens=max_tokens,
+                cache_key=cache_key,
             )
         except Exception as e:
             return AgentResult(
@@ -117,8 +127,8 @@ async def run_agent(
                 turns=turn - 1, usage=total_usage,
             )
 
-        total_usage["input_tokens"] += resp.usage.get("input_tokens", 0)
-        total_usage["output_tokens"] += resp.usage.get("output_tokens", 0)
+        for k in total_usage:
+            total_usage[k] += resp.usage.get(k, 0)
 
         if resp.message.text:
             final_text = resp.message.text  # keep only latest; JSON is in final turn
@@ -169,8 +179,14 @@ async def _execute_tool_calls(
             ))
             continue
         out, is_err = await registry.execute(tc.name, cwd, tc.arguments)
-        # Clamp to avoid runaway context bloat on misuse.
-        if len(out) > 30_000:
-            out = out[:30_000] + f"\n[... truncated {len(out) - 30_000} chars ...]"
+        # Read has its own offset/limit pagination; don't double-truncate here.
+        # Other tools (Grep/Glob/FindX) can still produce runaway output on
+        # misuse, so keep a generous cap with an explicit truncation notice.
+        if tc.name != "Read" and len(out) > 60_000:
+            out = (
+                out[:60_000]
+                + f"\n[... truncated {len(out) - 60_000} chars. "
+                f"Narrow the pattern/path/glob to see more.]"
+            )
         results.append(ToolResult(tool_call_id=tc.id, content=out, is_error=is_err))
     return results

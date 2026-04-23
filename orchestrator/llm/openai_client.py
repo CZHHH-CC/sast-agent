@@ -44,10 +44,20 @@ class OpenAIClient(LLMClient):
         base_url: str | None = None,
     ) -> None:
         self.model = model or os.environ.get("SAST_OPENAI_MODEL", "gpt-4o")
+        self._configured_base_url = base_url or os.environ.get("SAST_OPENAI_BASE_URL")
         self.client = AsyncOpenAI(
             api_key=api_key or os.environ.get("OPENAI_API_KEY"),
-            base_url=base_url or os.environ.get("SAST_OPENAI_BASE_URL"),
+            base_url=self._configured_base_url,
         )
+
+    def _base_url_looks_official(self) -> bool:
+        """Whitelist of base_urls that are known to accept OpenAI's prompt_cache_key
+        field. Third-party proxies may 400 on unknown params."""
+        url = self._configured_base_url
+        if not url:
+            return True  # default → api.openai.com
+        lowered = url.lower()
+        return "api.openai.com" in lowered or "azure.com" in lowered
 
     def _tools_to_openai(self, tools: list[ToolDef]) -> list[dict[str, Any]]:
         return [
@@ -117,6 +127,7 @@ class OpenAIClient(LLMClient):
         messages: list[Message],
         tools: list[ToolDef],
         max_tokens: int = 4096,
+        cache_key: str | None = None,
     ) -> LLMResponse:
         kwargs: dict[str, Any] = {
             "model": self.model,
@@ -126,6 +137,22 @@ class OpenAIClient(LLMClient):
         if tools:
             kwargs["tools"] = self._tools_to_openai(tools)
             kwargs["tool_choice"] = "auto"
+
+        # --- Prompt caching hint --------------------------------------------
+        # OpenAI Automatic Prompt Caching (≥1024 token prefix) is free and
+        # transparent; `prompt_cache_key` is a routing hint that dramatically
+        # improves hit rate when the same role is called many times in a run.
+        # Third-party OpenAI-compatible endpoints may not recognize the field,
+        # so it is opt-out via SAST_DISABLE_PROMPT_CACHE=1. We also skip it
+        # when a non-official base_url is configured unless explicitly enabled
+        # via SAST_OPENAI_PROMPT_CACHE_KEY=1, to avoid 400s from strict proxies.
+        cache_disabled = os.environ.get("SAST_DISABLE_PROMPT_CACHE") == "1"
+        force_cache_key = os.environ.get("SAST_OPENAI_PROMPT_CACHE_KEY") == "1"
+        is_official = self._base_url_looks_official()
+        if cache_key and not cache_disabled and (is_official or force_cache_key):
+            # `extra_body` sends the field as-is; unknown fields on official
+            # OpenAI get silently ignored, so it's safe to always include there.
+            kwargs["extra_body"] = {"prompt_cache_key": cache_key}
 
         resp = await self.client.chat.completions.create(**kwargs)
         choice = resp.choices[0]
@@ -147,8 +174,15 @@ class OpenAIClient(LLMClient):
         )
         stop = _STOP_MAP.get(choice.finish_reason or "stop", StopReason.END_TURN)
         usage_obj = getattr(resp, "usage", None)
+        cached = 0
+        if usage_obj is not None:
+            details = getattr(usage_obj, "prompt_tokens_details", None)
+            if details is not None:
+                cached = getattr(details, "cached_tokens", 0) or 0
         usage = {
             "input_tokens": getattr(usage_obj, "prompt_tokens", 0) if usage_obj else 0,
             "output_tokens": getattr(usage_obj, "completion_tokens", 0) if usage_obj else 0,
+            "cache_read_input_tokens": cached,
+            "cache_creation_input_tokens": 0,
         }
         return LLMResponse(message=msg, stop_reason=stop, usage=usage)

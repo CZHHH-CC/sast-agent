@@ -63,7 +63,8 @@
 
 ## 重要约束
 
-- 只用只读工具：`Glob`, `Grep`, `Read`
+- 只用只读工具：`Glob`, `Grep`, `Read`, `FindFunction`, `FindCallers`, `FindImports`
+  - `FindFunction` / `FindCallers` 是轻量语义查询，比 Grep 精确；优先用它们定位"某函数定义在哪 / 谁调用了它"
 - 不要修改任何文件
 - 不要尝试运行代码
 - 如果被扫描文件集为空，输出 `{"candidates": []}`

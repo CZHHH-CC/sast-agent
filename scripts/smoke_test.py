@@ -136,11 +136,12 @@ class FakeProvider(LLMClient):
         self.script = list(script)
         self.calls: list[dict] = []
 
-    async def complete(self, *, system, messages, tools, max_tokens=4096):
+    async def complete(self, *, system, messages, tools, max_tokens=4096, cache_key=None):
         self.calls.append({
             "n_messages": len(messages),
             "tool_names": [t.name for t in tools],
             "last_role": messages[-1].role if messages else None,
+            "cache_key": cache_key,
         })
         if not self.script:
             raise RuntimeError("FakeProvider: script exhausted")
