@@ -481,6 +481,51 @@ def test_fix_pr_body_rendering() -> None:
     print("[OK] fix PR body rendering")
 
 
+def test_design_intent_guard() -> None:
+    """Validator's design_intent rigor: missing evidence → auto-demote to over_inference."""
+    from orchestrator.validator_pool import _enforce_design_intent_rigor
+
+    # 1. Missing evidence object → demote
+    x = {"status": "excluded", "exclusion_category": "design_intent",
+         "sink_type": "hardcoded_secret", "reason": "dev default"}
+    _enforce_design_intent_rigor(x)
+    assert x["exclusion_category"] == "over_inference", x
+    assert "auto-demoted" in x["reason"]
+
+    # 2. Secret-class sink can NEVER be design_intent, even with full evidence
+    x = {"status": "excluded", "exclusion_category": "design_intent",
+         "sink_type": "hardcoded_secret", "reason": "JWT default",
+         "evidence": {"override_read_at": "settings.py:45",
+                      "override_set_at": "docker-compose.yml:42",
+                      "fail_mode": "safe-fail"}}
+    _enforce_design_intent_rigor(x)
+    assert x["exclusion_category"] == "over_inference", x
+
+    # 3. Non-secret sink WITH full evidence → stays design_intent
+    x = {"status": "excluded", "exclusion_category": "design_intent",
+         "sink_type": "ssrf", "reason": "endpoint from env",
+         "evidence": {"override_read_at": "storage/s3.py:34",
+                      "override_set_at": "docker-compose.yml:20",
+                      "fail_mode": "safe-fail: startup validates s3_endpoint"}}
+    _enforce_design_intent_rigor(x)
+    assert x["exclusion_category"] == "design_intent", x
+
+    # 4. Evidence missing :line marker → demote
+    x = {"status": "excluded", "exclusion_category": "design_intent",
+         "sink_type": "ssrf", "reason": "env",
+         "evidence": {"override_read_at": "storage/s3.py",  # no :line
+                      "override_set_at": "docker-compose.yml:20",
+                      "fail_mode": "safe-fail"}}
+    _enforce_design_intent_rigor(x)
+    assert x["exclusion_category"] == "over_inference", x
+
+    # 5. Confirmed findings are untouched
+    x = {"status": "confirmed", "sink_type": "hardcoded_secret"}
+    _enforce_design_intent_rigor(x)
+    assert x["status"] == "confirmed" and "exclusion_category" not in x
+    print("[OK] design_intent guard (demote on missing/weak evidence)")
+
+
 if __name__ == "__main__":
     test_fingerprint_stability()
     test_scope()
@@ -493,4 +538,5 @@ if __name__ == "__main__":
     anyio.run(_fixer_and_reviewer_parse)
     _github_helpers_offline()
     test_fix_pr_body_rendering()
+    test_design_intent_guard()
     print("\nALL SMOKE TESTS PASSED")

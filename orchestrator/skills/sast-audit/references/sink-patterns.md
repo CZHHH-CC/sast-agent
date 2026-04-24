@@ -476,25 +476,63 @@ XML 解析器默认允许外部实体引用 → 可读本地文件、触发 SSRF
 
 ---
 
-## 业务逻辑类（IDOR / 越权 / 批量赋值）
+## 业务逻辑类（IDOR / 越权 / 批量赋值 / 越权装饰器缺失）
 
 ### 核心概念
 
-框架语法层面无"漏洞"，但业务规则失效。
+框架语法层面无"漏洞"，但业务规则失效。Scanner 对这一类天然倾向沉默（没有固定 sink API），**必须主动按以下清单拉网扫查**，否则会系统性漏报整整一大类漏洞。
 
-### 危险信号（非穷举）
+### Phase 1 拉网清单（**必须逐条 grep，不要跳过**）
 
-- IDOR：`GET /api/order/{id}` 未校验订单归属
-- 批量赋值：`@RequestBody User user` 允许前端传 `isAdmin=true`、Rails `params.permit!`、Django `ModelForm` 无 `fields` 白名单
-- 状态机跳跃：订单状态可从 `created` 直接改 `paid` 绕过支付
-- 价格篡改：结算用前端传的 `price` 而非服务端查询
-- 优惠券 / 积分：无并发控制导致重复使用
+对每一个 route/endpoint 文件，回答以下问题；只要有一条答"不是 / 不确定"就产出候选（sink_type=`auth_bypass` 或 `business_logic`）：
+
+**A. 路由参数 vs 当前用户**
+- 路由含 `{id}` / `{user_id}` / `{slug}` / `{uuid}` 等资源标识符
+- handler 内是否出现 `current_user.id == <param>` / `user_id=current_user.id` 的过滤？
+- DB 查询是否附加了 `.filter(owner_id=current_user.id)` / `WHERE user_id = ?` 的归属校验？
+- Python FastAPI: `Depends(get_current_user)` 之后，handler 有没有真的**用**这个 user？**拿到但不用**是最常见的 IDOR 模式
+- Django DRF: `get_queryset` 是否按 `request.user` 过滤？还是返回 `Model.objects.all()`？
+- Spring: `@PreAuthorize("hasRole(...)")` 只校验了角色，没校验所有权？
+
+**B. 管理员 / 高权限端点**
+- Grep 正则：`/admin/`、`@admin_required`、`is_admin`、`has_permission`、`role ==`、`@PreAuthorize`
+- 定义了 admin endpoint，装饰器/中间件**漏加**的案例：对比同文件其他 admin endpoint 的装饰器，找缺失者
+- 反向 grep：列出所有 POST/PUT/DELETE endpoint，检查是否都有认证依赖
+- sqladmin / flask-admin / django-admin 的 mount 点是否有独立的访问控制？（默认路径 `/admin`、`/sqladmin` 必查）
+
+**C. 批量赋值 / 过度绑定**
+- FastAPI / Pydantic: `Model(**request.json())` / `UserUpdate(**body)` —— schema 是否限制了可改字段？是否允许前端改 `is_admin` / `role` / `user_id` / `owner_id`？
+- Django: `Model.objects.create(**request.POST)` / `ModelForm` 无 `Meta.fields` 白名单
+- Rails: `params.permit!`、`User.update(params[:user])` 未 strong params
+- Spring: `@RequestBody UserDto` 里是否包含敏感字段（权限位、余额）？
+- Sequelize / TypeORM: `.update(req.body)` 整体展开
+- 通用信号：任何 `**kwargs`、`...spread`、整个对象解构到持久化模型的地方
+
+**D. 状态机 / 金额 / 配额**
+- 订单 / 支付 / 审批状态：`status = request.body.status` 之类直接赋值（应通过业务方法转换）
+- 结算 / 退款金额：服务端是否用 `price = body["price"]` 而非从 DB 查原价？
+- 配额 / 积分 / 余额扣减：是否有乐观锁 (`version`) / 悲观锁 (`SELECT ... FOR UPDATE`) / DB 级 `CHECK` 约束？否则是条件竞争漏洞
+- 优惠券核销：是否有 `UNIQUE(user_id, coupon_id)` 索引 + 原子 `INSERT ... ON CONFLICT`？否则可并发重复使用
+
+**E. 认证依赖缺失**
+- FastAPI: 在同一 router 下，大多数 endpoint 有 `Depends(get_current_user)`，少数没有 → 列出没有的
+- Django DRF: ViewSet 的 `permission_classes` 是否只在某些 action 上设置？
+- Next.js / Express: route handler 第一行是否检查 session？对照 `middleware.ts` 的 `matcher` 看覆盖范围
+- 常见疏漏：`PATCH /user/{id}/password`、`POST /api/import`、`DELETE /resources/{id}`
 
 ### 判定原则
 
 - **任何与资源所有权相关的操作**：服务端必须校验当前用户对资源的权限
 - **任何与金钱相关的计算**：服务端重新计算，不信任前端
 - **DTO 白名单**而非黑名单：只接受必要字段
+- **状态机跳跃**：关键状态转换必须走领域方法，不能赋值
+- 发现管理端（sqladmin / flask-admin / django-admin-tools 等）挂载在路由树上，而未在 middleware / dependency 层做独立鉴权 → 直接 `auth_bypass` 候选
+
+### 安全反例（可快速排除）
+
+- handler 内第一行就是 `if obj.owner_id != current_user.id: raise 403` → 已校验，排除
+- Pydantic model 字段明确列出且不含权限位 → 批量赋值安全
+- Django DRF `get_queryset(self): return Model.objects.filter(owner=self.request.user)` → IDOR 安全
 
 ---
 

@@ -22,7 +22,19 @@
 2. 对每个文件用 `Read` / `Grep` 识别候选
 3. 参考 `skills/sast-audit/references/sink-patterns.md` 的四层结构：**核心概念 → 危险信号 → 判定原则 → 安全反例**
 4. 遇到安全反例（如 `PreparedStatement` 占位符、React 默认转义）→ 不要作为候选
-5. 输出 JSON
+5. **对每个路由/控制器文件额外跑业务逻辑拉网**（`sink-patterns.md` 的"业务逻辑类 Phase 1 拉网清单" A-E 五项）——这一大类没有固定 sink API，如果不主动扫，就会系统性漏报 IDOR / 越权 / 批量赋值 / admin 面板未鉴权等真实漏洞
+6. 输出 JSON
+
+## 业务逻辑类的识别门槛（重要）
+
+不要因为"没有明显的危险函数调用"就跳过业务逻辑类候选。以下情况**必须**产出候选，即使单看代码似乎无异常：
+
+- **路由参数用于 DB 查询，但未见 `current_user` / `owner_id` / session 归属过滤** → `auth_bypass` 或 `business_logic`
+- **管理面板（sqladmin / flask-admin / django-admin / `/admin/*`）挂载于 app，未在 middleware 层单独鉴权** → `auth_bypass`
+- **Pydantic / DTO / `@RequestBody` 把整个请求体展开成模型**，且模型含权限位 / 状态位 / 金额等敏感字段 → `business_logic`（批量赋值）
+- **POST/PUT/DELETE endpoint 在文件里，但没有可见的认证依赖**（`Depends(get_current_user)` / `@login_required` / `permission_classes`）→ `auth_bypass`
+
+上述判断的**证据可以不完整**（比如不确定是不是真的能绕过）—— 这正是 Scanner 的职责范围，**交给 Validator 去证伪**，不要替它做决定。
 
 ## 输出格式（严格遵守）
 

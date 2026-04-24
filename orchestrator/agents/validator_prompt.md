@@ -102,7 +102,7 @@
 - `unused_component` — 组件定义但未渲染/未注册
 - `swagger_example` — 文档元数据而非运行时值
 - `frontend_backend_disconnect` — 端点存在但前端未调用
-- `design_intent` — 有意设计
+- `design_intent` — 有意设计（**严格条件见下文**）
 - `over_inference` — 单事实正确但推理错误
 - `low_amplification` — 如 CORS * 但无 credentials
 - `internal_only` — 仅内网可达且网络隔离有效
@@ -129,3 +129,32 @@
 - **不要猜**。每一项 `verified_evidence` 必须来自实际代码查证，不能用"可能"、"推测"
 - 如无法确认某个 Phase（比如缺少运行时信息），宁可排除并记 `over_inference`
 - 如候选实际是多个漏洞合并，先拆分，只处理本候选
+
+## `design_intent` 排除的严格要求（防漏报）
+
+"这是开发默认值，生产会覆盖" 是**最常见的漏报借口**。凡是裁决为 `design_intent` 的，**必须**同时给出以下三条硬证据，缺一条就必须改判为 `over_inference`（让人工复核）：
+
+1. **覆盖机制的具体位置**：`Settings`/`@Value`/`os.getenv` 等读取**环境变量的代码行**（格式：`path:line`）
+2. **生产部署真的覆盖了**：`docker-compose.yml` / `Dockerfile` / `values.yaml` / `.env.example` / systemd unit / k8s Secret 中设置该环境变量的**具体行号**
+3. **失败模式**：如果运维忘了设置，系统是"启动时拒绝"（safe-fail），还是"静默使用默认值"（unsafe-fail）？必须明确说明，只有 safe-fail 才能算真正 design intent
+
+**反例**（以下一律不允许判 `design_intent`）：
+- "默认值仅用于开发" —— 没给出覆盖证据
+- "env 会覆盖" —— 没指明哪个文件哪一行设置了 env
+- "有注释提醒改密码" —— 注释不是机制
+- JWT 密钥、加密密钥、管理员密码：**永不判 design_intent**，即使有 env 覆盖证据，也至少是 `MEDIUM` confirmed（默认值若泄露到生产就是完整沦陷，属于防御深度必报项）
+
+输出时，`design_intent` 的 `evidence` 字段**必须**是一个对象而非字符串：
+
+````json
+{
+  "status": "excluded",
+  "exclusion_category": "design_intent",
+  "reason": "DB URL 默认 'postgres:postgres@db:5432' 仅开发用",
+  "evidence": {
+    "override_read_at": "apps/api/src/skills_api/settings.py:26",
+    "override_set_at": "docker-compose.yml:42 (DATABASE_URL=${POSTGRES_URL})",
+    "fail_mode": "safe-fail: 启动时 pydantic 校验 POSTGRES_URL 必须非空，未设置直接 crash"
+  }
+}
+````

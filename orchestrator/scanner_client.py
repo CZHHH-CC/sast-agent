@@ -97,18 +97,64 @@ async def run_scanner_batched(
         "input_tokens": 0, "output_tokens": 0,
         "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
     }
-    for batch_idx, batch in enumerate(batches):
-        result = await run_scanner(repo, batch, max_turns=max_turns)
+
+    def _absorb(result: AgentResult) -> None:
         if result.usage:
             for k in agg_usage:
                 agg_usage[k] += result.usage.get(k, 0)
-        if result.error:
+
+    def _ingest(batch_idx: int, result: AgentResult) -> int:
+        """Merge parsed candidates from a batch; return count added."""
+        if not (result.parsed and isinstance(result.parsed.get("candidates"), list)):
+            return 0
+        added = 0
+        for idx, cand in enumerate(result.parsed["candidates"]):
+            cand["id"] = f"b{batch_idx}_{cand.get('id', idx)}"
+            all_candidates.append(cand)
+            added += 1
+        return added
+
+    # Retryable outcomes: the LLM either produced nothing parseable
+    # (``no_json_found`` / ``max_turns_exceeded``) or an empty candidate list.
+    # These are the main silent-FN source (run 24874431356 lost ~24 files this
+    # way). Transient llm_errors are also worth one more try.
+    RETRYABLE = {"no_json_found", "max_turns_exceeded"}
+
+    for batch_idx, batch in enumerate(batches):
+        result = await run_scanner(repo, batch, max_turns=max_turns)
+        _absorb(result)
+        added = _ingest(batch_idx, result)
+
+        needs_retry = False
+        reason = ""
+        if result.error in RETRYABLE:
+            needs_retry = True
+            reason = result.error or ""
+        elif result.error and result.error.startswith("llm_error:"):
+            needs_retry = True
+            reason = result.error
+
+        if needs_retry:
+            print(
+                f"  [scanner batch {batch_idx}] {reason}; retrying once "
+                f"({len(batch)} files)"
+            )
+            retry = await run_scanner(repo, batch, max_turns=max_turns)
+            _absorb(retry)
+            retry_added = _ingest(batch_idx, retry)
+            if retry.error and retry.error not in ("no_json_found",):
+                errors.append(retry.error)
+                print(f"  [scanner batch {batch_idx} retry] error: {retry.error}")
+            elif retry.error == "no_json_found":
+                # Still nothing — record so the hard-fail gate sees it.
+                errors.append(retry.error)
+                print(f"  [scanner batch {batch_idx} retry] still no_json_found; giving up on this batch")
+            else:
+                print(f"  [scanner batch {batch_idx} retry] recovered +{retry_added} candidate(s)")
+        elif result.error:
             errors.append(result.error)
             print(f"  [scanner batch {batch_idx}] error: {result.error}")
-        if result.parsed and isinstance(result.parsed.get("candidates"), list):
-            for idx, cand in enumerate(result.parsed["candidates"]):
-                cand["id"] = f"b{batch_idx}_{cand.get('id', idx)}"
-                all_candidates.append(cand)
+        _ = added  # silence unused
 
     if errors and len(errors) == len(batches) and not all_candidates:
         raise RuntimeError(

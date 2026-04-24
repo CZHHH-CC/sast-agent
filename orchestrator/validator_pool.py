@@ -135,12 +135,68 @@ async def _validate_group(
         )
 
 
+_REQUIRED_DESIGN_INTENT_KEYS = {"override_read_at", "override_set_at", "fail_mode"}
+
+# Secret categories where design_intent is **never** acceptable — even with a
+# proper env override, shipping a default is a defense-in-depth issue that
+# should surface to humans. See validator_prompt.md "严格要求 (防漏报)".
+_NO_DESIGN_INTENT_SINKS = {
+    "hardcoded_secret",
+    "weak_crypto",
+    "auth_bypass",
+}
+
+
+def _enforce_design_intent_rigor(parsed: dict) -> dict:
+    """If the Validator used `design_intent` without meeting the evidence
+    contract (validator_prompt.md), demote to `over_inference` so the finding
+    surfaces for human review instead of silently disappearing from the report.
+
+    Three demotion triggers:
+      1. sink_type is in the never-design-intent list (secrets / crypto / auth)
+      2. `evidence` is not a dict, or missing any of the three required keys
+      3. any of override_read_at / override_set_at lacks a ``:line`` marker
+    """
+    if parsed.get("status") != "excluded":
+        return parsed
+    if parsed.get("exclusion_category") != "design_intent":
+        return parsed
+
+    def _demote(why: str) -> dict:
+        parsed["exclusion_category"] = "over_inference"
+        prior = parsed.get("reason") or ""
+        parsed["reason"] = (
+            f"[auto-demoted from design_intent: {why}] {prior}"
+        ).strip()
+        return parsed
+
+    sink = str(parsed.get("sink_type") or "").lower()
+    if sink in _NO_DESIGN_INTENT_SINKS:
+        return _demote(f"sink_type={sink!r} is never a design_intent exclusion")
+
+    evidence = parsed.get("evidence")
+    if not isinstance(evidence, dict):
+        return _demote("evidence must be an object with override_read_at / override_set_at / fail_mode")
+
+    missing = _REQUIRED_DESIGN_INTENT_KEYS - set(evidence.keys())
+    if missing:
+        return _demote(f"missing evidence keys: {sorted(missing)}")
+
+    for key in ("override_read_at", "override_set_at"):
+        val = str(evidence.get(key) or "")
+        if ":" not in val or not val.strip():
+            return _demote(f"evidence.{key} must be 'path:line', got {val!r}")
+
+    return parsed
+
+
 def _enrich_from_candidate(parsed: dict, cand: dict) -> dict:
     parsed.setdefault("file", cand.get("file"))
     parsed.setdefault("line", cand.get("line"))
     parsed.setdefault("sink_type", cand.get("sink_type"))
     parsed.setdefault("snippet", cand.get("snippet"))
     parsed.setdefault("candidate_id", cand.get("id"))
+    _enforce_design_intent_rigor(parsed)
     return parsed
 
 
