@@ -9,6 +9,7 @@ Works against:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import Any
@@ -31,6 +32,28 @@ _STOP_MAP = {
     "length": StopReason.MAX_TOKENS,
     "content_filter": StopReason.ERROR,
 }
+
+
+async def _call_with_retry(fn, *, timeout_s: float):
+    """Run ``fn`` (an async-returning zero-arg callable) with a timeout and
+    one retry on timeout / transient error. Second failure re-raises.
+
+    Kept tiny on purpose — anything longer should move to tenacity.
+    """
+    try:
+        return await asyncio.wait_for(fn(), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        await asyncio.sleep(2.0)
+        return await asyncio.wait_for(fn(), timeout=timeout_s)
+    except Exception as e:
+        # Retry once on obvious transient infra errors; everything else bubbles.
+        name = type(e).__name__
+        transient = ("APIConnectionError", "APITimeoutError", "InternalServerError",
+                     "RateLimitError", "ServiceUnavailableError")
+        if name in transient:
+            await asyncio.sleep(2.0)
+            return await asyncio.wait_for(fn(), timeout=timeout_s)
+        raise
 
 
 class OpenAIClient(LLMClient):
@@ -154,7 +177,14 @@ class OpenAIClient(LLMClient):
             # OpenAI get silently ignored, so it's safe to always include there.
             kwargs["extra_body"] = {"prompt_cache_key": cache_key}
 
-        resp = await self.client.chat.completions.create(**kwargs)
+        # B4: bound each request + retry once on transient failure. Without
+        # this a hung xiaomimimo socket could stall a Validator for minutes
+        # before surfacing; with it we fail fast then try exactly once more.
+        timeout_s = float(os.environ.get("SAST_LLM_TIMEOUT_S", "120"))
+        resp = await _call_with_retry(
+            lambda: self.client.chat.completions.create(**kwargs),
+            timeout_s=timeout_s,
+        )
         choice = resp.choices[0]
         raw_msg = choice.message
 

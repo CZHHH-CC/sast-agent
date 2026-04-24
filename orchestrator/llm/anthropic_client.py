@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any
 
@@ -23,6 +24,23 @@ _STOP_MAP = {
     "max_tokens": StopReason.MAX_TOKENS,
     "stop_sequence": StopReason.STOP_SEQUENCE,
 }
+
+
+async def _call_with_retry(fn, *, timeout_s: float):
+    """Bound a request with a timeout + single transient-error retry. B4."""
+    try:
+        return await asyncio.wait_for(fn(), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        await asyncio.sleep(2.0)
+        return await asyncio.wait_for(fn(), timeout=timeout_s)
+    except Exception as e:
+        name = type(e).__name__
+        transient = ("APIConnectionError", "APITimeoutError", "InternalServerError",
+                     "RateLimitError", "ServiceUnavailableError", "OverloadedError")
+        if name in transient:
+            await asyncio.sleep(2.0)
+            return await asyncio.wait_for(fn(), timeout=timeout_s)
+        raise
 
 
 class AnthropicClient(LLMClient):
@@ -129,12 +147,16 @@ class AnthropicClient(LLMClient):
         # by OpenAI-compatible endpoints. Accept silently here.
         _ = cache_key
 
-        resp = await self.client.messages.create(
-            model=self.model,
-            system=system_param,
-            max_tokens=max_tokens,
-            messages=self._messages_to_anthropic(messages),
-            tools=anth_tools,
+        timeout_s = float(os.environ.get("SAST_LLM_TIMEOUT_S", "120"))
+        resp = await _call_with_retry(
+            lambda: self.client.messages.create(
+                model=self.model,
+                system=system_param,
+                max_tokens=max_tokens,
+                messages=self._messages_to_anthropic(messages),
+                tools=anth_tools,
+            ),
+            timeout_s=timeout_s,
         )
 
         text_parts: list[str] = []

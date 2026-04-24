@@ -48,6 +48,9 @@ class ValidatorBatchResult:
     results: list[dict] = field(default_factory=list)
     llm_errors: list[dict] = field(default_factory=list)
     parse_errors: list[dict] = field(default_factory=list)
+    # B1: aggregate token usage across every group call in this batch.
+    usage: dict[str, int] = field(default_factory=dict)
+    calls: int = 0
 
     @property
     def total_attempted(self) -> int:
@@ -217,6 +220,13 @@ async def validate_all(
     results: list[AgentResult] = await asyncio.gather(*tasks)
 
     batch = ValidatorBatchResult()
+    agg = {"input_tokens": 0, "output_tokens": 0,
+           "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
     for group, res in zip(groups, results):
         _distribute_group_result(group, res, batch)
+        if res.usage:
+            for k in agg:
+                agg[k] += res.usage.get(k, 0)
+    batch.usage = agg
+    batch.calls = len(groups)
     return batch

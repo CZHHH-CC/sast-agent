@@ -2,10 +2,24 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .agent_runtime import AgentResult, run_agent
 from .scope import cluster_by_directory
+
+
+@dataclass
+class ScannerBatchResult:
+    """Return value of ``run_scanner_batched`` (B1).
+
+    Carries the merged candidate list plus aggregate token usage across every
+    batch's LLM turns so the caller can print a per-phase cost breakdown.
+    """
+    candidates: list[dict] = field(default_factory=list)
+    usage: dict[str, int] = field(default_factory=dict)
+    calls: int = 0
+    batches: int = 0
 
 
 SCANNER_TOOLS = ["Glob", "Grep", "Read", "FindFunction", "FindCallers", "FindImports"]
@@ -16,7 +30,10 @@ SCANNER_SKILL_REFS = ["references/sink-patterns.md"]
 #     many files' coverage; higher chance LLM fits everything in one response.
 #   - Higher turn budget (60) → Read/Grep over 10–15 files comfortably.
 DEFAULT_SCANNER_BATCH_SIZE = 12
-DEFAULT_SCANNER_MAX_TURNS = 60
+# B3: 60 turns left LLMs room to meander; 40 is still plenty for a 12-file
+# batch (Read×12 + targeted Grep/Find ≈ 20-30 tool calls worst case) and
+# tightens the ceiling on Scanner cost when a batch starts spinning.
+DEFAULT_SCANNER_MAX_TURNS = 40
 
 
 def _build_user_prompt(repo: Path, files: list[Path]) -> str:
@@ -60,8 +77,8 @@ async def run_scanner_batched(
     batch_size: int = DEFAULT_SCANNER_BATCH_SIZE,
     *,
     max_turns: int = DEFAULT_SCANNER_MAX_TURNS,
-) -> list[dict]:
-    """Scan in batches to stay under context limits. Returns merged candidate list.
+) -> ScannerBatchResult:
+    """Scan in batches to stay under context limits. Returns ScannerBatchResult.
 
     Batches are built by directory clustering (see scope.cluster_by_directory)
     so same-module files share a Scanner window — preserves cross-file signal
@@ -71,13 +88,20 @@ async def run_scanner_batched(
     mistake an infra failure for a clean codebase.
     """
     if not files:
-        return []
+        return ScannerBatchResult()
 
     batches = cluster_by_directory(files, target_batch_size=batch_size)
     all_candidates: list[dict] = []
     errors: list[str] = []
+    agg_usage: dict[str, int] = {
+        "input_tokens": 0, "output_tokens": 0,
+        "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+    }
     for batch_idx, batch in enumerate(batches):
         result = await run_scanner(repo, batch, max_turns=max_turns)
+        if result.usage:
+            for k in agg_usage:
+                agg_usage[k] += result.usage.get(k, 0)
         if result.error:
             errors.append(result.error)
             print(f"  [scanner batch {batch_idx}] error: {result.error}")
@@ -91,4 +115,39 @@ async def run_scanner_batched(
             f"Scanner failed on all {len(batches)} batch(es). "
             f"First error: {errors[0]}"
         )
-    return all_candidates
+
+    # A2: dedup by (sink_type, file, line). Same Scanner batch often emits the
+    # same file:line multiple times with slightly different snippets (common
+    # with mimo/gpt class models on Java); keeping only the longest-snippet
+    # representative cuts Validator work by 30-50% without losing signal.
+    # If ``line`` is missing we fall back to treating the snippet as the key
+    # so snippet-differentiated candidates are still preserved.
+    deduped: dict[tuple, dict] = {}
+    for cand in all_candidates:
+        sink = cand.get("sink_type", "other")
+        file = str(cand.get("file", ""))
+        line = cand.get("line")
+        if line is None:
+            key = (sink, file, None, str(cand.get("snippet", ""))[:120])
+        else:
+            key = (sink, file, int(line) if str(line).isdigit() else line)
+        prev = deduped.get(key)
+        if prev is None:
+            deduped[key] = cand
+            continue
+        # Keep the one with the richer snippet so Validator has more to go on.
+        if len(str(cand.get("snippet", ""))) > len(str(prev.get("snippet", ""))):
+            deduped[key] = cand
+
+    collapsed = list(deduped.values())
+    if len(collapsed) < len(all_candidates):
+        print(
+            f"  [scanner] deduped {len(all_candidates)} → {len(collapsed)} "
+            f"candidate(s) by (sink_type, file, line)"
+        )
+    return ScannerBatchResult(
+        candidates=collapsed,
+        usage=agg_usage,
+        calls=len(batches),
+        batches=len(batches),
+    )

@@ -61,6 +61,12 @@
 - `snippet` 不超过 5 行、300 字符
 - 按 `file` 排序
 
+## 去重要求（重要）
+
+- 同一个 `file:line` 不要重复上报。若该行同时涉及多个问题（例如既是 SQL 注入又是日志敏感信息），合并成**一个** candidate，`sink_type` 取最严重的一类，其余在 `rule_hint` 里补充说明。
+- 同一片 2-3 行内的代码只产出一条候选；不要因为换了不同的 `rule_hint` 措辞就把同一个 sink 拆成多条。
+- 用于去重的"同一位置"判定：`file` 完全相同 **且** `line` 差异 ≤ 2 行。
+
 ## 重要约束
 
 - 只用只读工具：`Glob`, `Grep`, `Read`, `FindFunction`, `FindCallers`, `FindImports`

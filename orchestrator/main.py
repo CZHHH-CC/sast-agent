@@ -41,6 +41,7 @@ def _fp_for_candidate(cand: dict) -> str:
     return make_fingerprint(
         sink_type=cand.get("sink_type", "other"),
         file=str(cand.get("file", "")),
+        line=cand.get("line"),
         snippet=str(cand.get("snippet", "")),
     )
 
@@ -77,11 +78,13 @@ async def _scan(
     # 2. Scanner (Phase 1)
     console.print("[cyan]→ running Scanner agent(s)…[/cyan]")
     try:
-        candidates = await run_scanner_batched(repo, files)
+        scan_res = await run_scanner_batched(repo, files)
     except RuntimeError as e:
         console.print(f"[red]{e}[/red]")
         return 3
+    candidates = scan_res.candidates
     console.print(f"[green]Scanner produced {len(candidates)} candidate(s).[/green]")
+    _print_phase_usage("Scanner", scan_res.calls, scan_res.usage)
 
     if not candidates:
         # Ensure baseline.db exists (even empty) so downstream steps don't fail.
@@ -111,6 +114,7 @@ async def _scan(
 
     # 4. Validator fan-out
     batch = await validate_all(repo, to_validate, concurrency=concurrency)
+    _print_phase_usage("Validator", batch.calls, batch.usage)
 
     # 4b. Hard-fail on mass LLM/infra failure so users don't mistake a 403/402/
     #     network blip for a clean scan. LLM-error entries are NOT written to the
@@ -210,6 +214,26 @@ def _write_report(
     )
     out_path.write_text(md, encoding="utf-8")
     console.print(f"[green]Report written:[/green] {out_path}")
+
+
+def _print_phase_usage(phase: str, calls: int, usage: dict[str, int] | None) -> None:
+    """One-line token-usage summary for a pipeline phase (B1).
+
+    Example:
+      Scanner   8 call(s)  input=124,300 (cached 82,100, 66%)  output=9,420
+    """
+    if not usage:
+        return
+    inp = usage.get("input_tokens", 0) or 0
+    out = usage.get("output_tokens", 0) or 0
+    cached = usage.get("cache_read_input_tokens", 0) or 0
+    created = usage.get("cache_creation_input_tokens", 0) or 0
+    pct = (cached * 100 // inp) if inp else 0
+    console.print(
+        f"  [dim]{phase:<10}[/dim] [bold]{calls}[/bold] call(s)  "
+        f"input=[bold]{inp:,}[/bold] (cache_read={cached:,}, {pct}%; "
+        f"cache_create={created:,})  output=[bold]{out:,}[/bold]"
+    )
 
 
 def _print_summary(confirmed: list[dict], excluded: list[dict]) -> None:
@@ -334,8 +358,8 @@ def dump_candidates(repo: Path, mode: str, base: str | None, head: str | None) -
             full_scan_files(repo) if mode == "full"
             else diff_scan_files(repo, base or "HEAD~1", head or "HEAD")
         )
-        cands = await run_scanner_batched(repo, files)
-        click.echo(json.dumps({"candidates": cands}, ensure_ascii=False, indent=2))
+        res = await run_scanner_batched(repo, files)
+        click.echo(json.dumps({"candidates": res.candidates}, ensure_ascii=False, indent=2))
 
     anyio.run(_do)
 
@@ -368,6 +392,7 @@ async def _fix_pipeline(
             f["_fingerprint"] = make_fingerprint(
                 sink_type=f.get("sink_type", "other"),
                 file=str(f.get("file", "")),
+                line=f.get("line"),
                 snippet=str(f.get("snippet", "")),
             )
     if limit:
